@@ -47,3 +47,39 @@ async def test_redirect_and_analytics(client: AsyncClient) -> None:
 async def test_invalid_url_rejected(client: AsyncClient) -> None:
     resp = await client.post("/api/links", json={"long_url": "not-a-url"})
     assert resp.status_code == 422  # Pydantic validation error
+
+
+@pytest.mark.asyncio
+async def test_list_links_pagination(client: AsyncClient) -> None:
+    for i in range(5):
+        await client.post("/api/links", json={"long_url": f"https://example.com/{i}"})
+
+    page = (await client.get("/api/links", params={"limit": 2, "offset": 0})).json()
+    assert len(page) == 2
+
+    page2 = (await client.get("/api/links", params={"limit": 2, "offset": 2})).json()
+    assert len(page2) == 2
+    # Pages must not overlap.
+    assert {link["id"] for link in page}.isdisjoint({link["id"] for link in page2})
+
+
+@pytest.mark.asyncio
+async def test_pagination_rejects_bad_limit(client: AsyncClient) -> None:
+    assert (await client.get("/api/links", params={"limit": 0})).status_code == 422
+    assert (await client.get("/api/links", params={"limit": 999})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_redirect_uses_cache_on_second_hit(client: AsyncClient) -> None:
+    """First redirect populates the cache; the code should then be resolvable
+    from Redis even if the DB row is gone."""
+    created = (
+        await client.post(
+            "/api/links",
+            json={"long_url": "https://example.com/cached", "custom_code": "cache1"},
+        )
+    ).json()
+
+    first = await client.get(f"/{created['code']}", follow_redirects=False)
+    assert first.status_code == 307
+    assert first.headers["location"] == "https://example.com/cached"

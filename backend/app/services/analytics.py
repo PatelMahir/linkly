@@ -3,6 +3,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import database
 from app.models import ClickEvent, Link
 from app.schemas import ClickPoint, LinkAnalytics
 
@@ -14,7 +15,7 @@ async def record_click(
     country: str | None,
     user_agent: str | None,
 ) -> None:
-    """Append a click event. Called on every redirect."""
+    """Append a click event using an existing session."""
     db.add(
         ClickEvent(
             link_id=link_id,
@@ -24,6 +25,22 @@ async def record_click(
         )
     )
     await db.commit()
+
+
+async def record_click_bg(
+    link_id: int,
+    referrer: str | None,
+    country: str | None,
+    user_agent: str | None,
+) -> None:
+    """Record a click from a FastAPI BackgroundTask.
+
+    Runs *after* the redirect response is sent, so the request-scoped session is
+    already closed — we open our own short-lived session here. `database.SessionLocal`
+    is referenced at call time so tests can point it at the test database.
+    """
+    async with database.SessionLocal() as db:
+        await record_click(db, link_id, referrer, country, user_agent)
 
 
 async def get_analytics(db: AsyncSession, link: Link) -> LinkAnalytics:

@@ -42,9 +42,10 @@ export function createLink(longUrl: string, customCode?: string): Promise<Link> 
   });
 }
 
-export function listLinks(): Promise<Link[]> {
-  // Server components can revalidate; keep it simple here.
-  return request<Link[]>("/api/links", { cache: "no-store" });
+export function listLinks(limit = 20, offset = 0): Promise<Link[]> {
+  // Paginated so the dashboard stays fast as the number of links grows.
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return request<Link[]>(`/api/links?${query}`, { cache: "no-store" });
 }
 
 export function getAnalytics(code: string): Promise<LinkAnalytics> {

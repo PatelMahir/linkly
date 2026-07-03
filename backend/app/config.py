@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # Cache TTL for code -> url lookups, in seconds.
     cache_ttl_seconds: int = 3600
 
+    # Rate limits (fixed-window, per client IP). Tune per environment.
+    rate_limit_create_per_minute: int = 30
+    rate_limit_redirect_per_minute: int = 600
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
