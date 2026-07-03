@@ -1,11 +1,33 @@
-"""Analytics queries: aggregate click_events into dashboard-ready shapes."""
+"""Analytics: enqueue clicks (write path) and aggregate them (read path).
+
+Write path is decoupled via RabbitMQ — the redirect *enqueues* a click and the
+worker (`app/worker.py`) calls `record_click` to persist it. This keeps the
+redirect fast and lets ingestion scale independently.
+"""
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import database
+from app import queue
 from app.models import ClickEvent, Link
 from app.schemas import ClickPoint, LinkAnalytics
+
+
+async def enqueue_click(
+    link_id: int,
+    referrer: str | None,
+    country: str | None,
+    user_agent: str | None,
+) -> None:
+    """Publish a click event to the broker (called from the redirect path)."""
+    await queue.publish_click(
+        {
+            "link_id": link_id,
+            "referrer": referrer,
+            "country": country,
+            "user_agent": user_agent,
+        }
+    )
 
 
 async def record_click(
@@ -15,7 +37,7 @@ async def record_click(
     country: str | None,
     user_agent: str | None,
 ) -> None:
-    """Append a click event using an existing session."""
+    """Persist a click event. Called by the worker after consuming a message."""
     db.add(
         ClickEvent(
             link_id=link_id,
@@ -25,22 +47,6 @@ async def record_click(
         )
     )
     await db.commit()
-
-
-async def record_click_bg(
-    link_id: int,
-    referrer: str | None,
-    country: str | None,
-    user_agent: str | None,
-) -> None:
-    """Record a click from a FastAPI BackgroundTask.
-
-    Runs *after* the redirect response is sent, so the request-scoped session is
-    already closed — we open our own short-lived session here. `database.SessionLocal`
-    is referenced at call time so tests can point it at the test database.
-    """
-    async with database.SessionLocal() as db:
-        await record_click(db, link_id, referrer, country, user_agent)
 
 
 async def get_analytics(db: AsyncSession, link: Link) -> LinkAnalytics:

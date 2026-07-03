@@ -28,11 +28,23 @@ services:
       timeout: 3s
       retries: 10
 
+  broker:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # management UI (guest/guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
+      RABBITMQ_URL: ${RABBITMQ_URL}
       BASE_URL: ${BASE_URL}
       CORS_ORIGINS: ${CORS_ORIGINS}
     ports:
@@ -42,10 +54,26 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
+      broker:
+        condition: service_healthy
     # Run migrations, then start the API. In prod you'd split these steps.
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  # Consumes click events from RabbitMQ and writes them to Postgres.
+  # Scale horizontally with: docker compose up --scale worker=3
+  worker:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    command: python -m app.worker
 
   frontend:
     build: ./frontend

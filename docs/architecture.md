@@ -11,12 +11,14 @@ Linkly is a two-service app plus two stateful backing services:
 |-----------|---------|----------------|
 | Frontend  | Next.js (Node) | UI, SSR, calls the API. |
 | Backend   | FastAPI (Python) | REST API, redirects, business logic. |
+| Worker    | Python (aio-pika) | Consumes click events, writes them to Postgres. |
 | Postgres  | —       | Source of truth: links + click events. |
 | Redis     | —       | Cache for hot redirect lookups; rate-limit primitive. |
+| RabbitMQ  | —       | Buffers click events between redirect and worker. |
 
-They run as four containers via `docker-compose.yml`. In production you'd deploy
-frontend and backend independently (e.g. Vercel + a container platform) and use
-managed Postgres/Redis.
+They run as containers via `docker-compose.yml`. In production you'd deploy
+frontend and backend independently (e.g. Vercel + a container platform), run the
+worker as its own scalable deployment, and use managed Postgres/Redis/RabbitMQ.
 
 ## 2. Data model
 
@@ -52,12 +54,15 @@ directly. Services own transactions and the DB/cache. This is the standard
 transport → service → data-access split from the coding standards.
 
 ### Redirect hot path
-1. `resolve_code` checks Redis for `code → long_url`.
-2. On miss, read Postgres and populate Redis with a TTL (`cache_ttl_seconds`).
-3. Record a click event, then return `307`.
+1. `resolve_code` checks Redis for `code → {id, url}`.
+2. On miss, read Postgres once and populate Redis with a TTL (`cache_ttl_seconds`).
+3. Publish a click to RabbitMQ (best-effort), then return `307` immediately.
+4. The **worker** consumes the message and writes the `click_event` row.
 
 Caching matters because redirects are the dominant traffic and are read-heavy
-with rarely-changing data — an ideal cache candidate.
+with rarely-changing data — an ideal cache candidate. Publishing (rather than
+writing) the click keeps redirect latency independent of DB write load, and lets
+analytics ingestion absorb bursts and scale via more worker replicas.
 
 ## 4. Frontend rendering strategy
 
@@ -73,7 +78,7 @@ with rarely-changing data — an ideal cache candidate.
 | Area | Current (reference) | Production next step |
 |------|---------------------|----------------------|
 | Auth | none | Sessions/JWT + per-user link ownership (authz on every path). |
-| Analytics | background ingestion + live `GROUP BY` | Queue (RabbitMQ/BullMQ) + rollup tables for high volume. |
+| Analytics | ✅ RabbitMQ ingestion + live `GROUP BY` | Rollup/summary tables or a warehouse for very high volume. |
 | Rate limiting | ✅ Redis fixed-window per IP on create + redirect | Sliding-window / token-bucket; per-API-key quotas. |
 | Redirect path | ✅ Redis read-through cache; non-blocking click writes | Edge cache / CDN in front for global latency. |
 | Health | ✅ `/health` liveness + `/ready` (DB + Redis) | Add dependency-level SLOs and alerting. |
@@ -84,9 +89,10 @@ with rarely-changing data — an ideal cache candidate.
 ### How this branch scales the service
 
 1. **Redirects are the hottest path**, so we (a) serve them from a Redis
-   read-through cache — a cache hit never touches Postgres — and (b) move the
-   click write into a `BackgroundTask` so the redirect response isn't blocked by
-   an `INSERT`. Under load these two changes cut both DB reads and p99 latency.
+   read-through cache — a cache hit never touches Postgres — and (b) publish the
+   click to **RabbitMQ** and let a **worker** persist it, so the redirect isn't
+   blocked by an `INSERT`. Under load these cut DB reads, decouple redirect
+   latency from write throughput, and let ingestion scale on its own.
 2. **Rate limiting** (Redis `INCR` + `EXPIRE`, O(1) per request) caps abuse and
    protects the DB from stampedes — applied to link creation and redirects.
 3. **`/ready`** lets an orchestrator drain and shift traffic safely during

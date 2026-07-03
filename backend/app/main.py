@@ -5,7 +5,8 @@ catch-all `/{code}` route doesn't shadow the `/api/*` and docs routes.
 """
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
@@ -13,16 +14,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app import cache, database
+from app import cache, database, queue
 from app.config import get_settings
 from app.routers import analytics, links, redirect
 
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+    """Close the broker connection cleanly on shutdown."""
+    yield
+    await queue.close()
+
+
 app = FastAPI(
     title="Linkly API",
     version="0.1.0",
     description="URL shortener with click analytics.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://linkly:linkly_dev_password@localhost:5432/linkly"
     redis_url: str = "redis://localhost:6379/0"
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
     base_url: str = "http://localhost:8000"
     cors_origins: str = "http://localhost:3000"
 
