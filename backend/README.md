@@ -41,11 +41,23 @@ Interactive docs: http://localhost:8000/docs
 
 | Method | Path                    | Purpose |
 |--------|-------------------------|---------|
-| POST   | `/api/links`            | Create a short link (optional `custom_code`). |
-| GET    | `/api/links`            | List links (newest first). |
+| POST   | `/api/links`            | Create a short link (optional `custom_code`). Rate-limited per IP. |
+| GET    | `/api/links?limit=&offset=` | List links (newest first), paginated (`limit` 1–100). |
 | GET    | `/api/analytics/{code}` | Clicks, top referrers, daily timeseries. |
-| GET    | `/{code}`               | Redirect + record a click. |
-| GET    | `/health`               | Liveness probe. |
+| GET    | `/{code}`               | Redirect (307) + record a click in the background. Rate-limited per IP. |
+| GET    | `/health`               | Liveness probe (process up). |
+| GET    | `/ready`                | Readiness probe: checks Postgres + Redis (200 ok / 503 degraded). |
+
+Every response carries `X-Request-ID` and `X-Process-Time-Ms` headers for tracing.
+
+### Scaling behavior
+
+- **Redirects don't block on writes.** The click is recorded in a FastAPI
+  `BackgroundTask` (its own DB session), so the 307 returns immediately.
+- **Cache-hit redirects skip Postgres.** `resolve_code` reads `code → {id, url}`
+  from Redis first (`app/cache.py`); only misses touch the DB.
+- **Rate limiting** is a Redis fixed-window counter per client IP
+  (`app/rate_limit.py`), tunable via `RATE_LIMIT_*` env vars.
 
 ## Migrations (Alembic)
 

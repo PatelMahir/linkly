@@ -73,11 +73,26 @@ with rarely-changing data — an ideal cache candidate.
 | Area | Current (reference) | Production next step |
 |------|---------------------|----------------------|
 | Auth | none | Sessions/JWT + per-user link ownership (authz on every path). |
-| Analytics | live `GROUP BY` | Async ingestion (queue) + rollup tables. |
-| Rate limiting | Redis available, not wired | Token bucket per IP on create + redirect. |
+| Analytics | background ingestion + live `GROUP BY` | Queue (RabbitMQ/BullMQ) + rollup tables for high volume. |
+| Rate limiting | ✅ Redis fixed-window per IP on create + redirect | Sliding-window / token-bucket; per-API-key quotas. |
+| Redirect path | ✅ Redis read-through cache; non-blocking click writes | Edge cache / CDN in front for global latency. |
+| Health | ✅ `/health` liveness + `/ready` (DB + Redis) | Add dependency-level SLOs and alerting. |
+| Observability | ✅ request-id + latency headers | Structured logs, metrics export (Prometheus), tracing. |
 | Secrets | `.env` files | Secret manager (AWS/Azure), never in the image. |
-| Observability | `/health` only | Structured logs, metrics, tracing. |
 | Deploys | Docker images | Blue/green or canary (see team runbooks). |
+
+### How this branch scales the service
+
+1. **Redirects are the hottest path**, so we (a) serve them from a Redis
+   read-through cache — a cache hit never touches Postgres — and (b) move the
+   click write into a `BackgroundTask` so the redirect response isn't blocked by
+   an `INSERT`. Under load these two changes cut both DB reads and p99 latency.
+2. **Rate limiting** (Redis `INCR` + `EXPIRE`, O(1) per request) caps abuse and
+   protects the DB from stampedes — applied to link creation and redirects.
+3. **`/ready`** lets an orchestrator drain and shift traffic safely during
+   rolling / blue-green / canary rollouts (a pod can be *up* but not *ready*).
+4. **Pagination** keeps the list endpoint bounded as link counts grow.
+5. **Request-id + timing headers** make requests traceable across services.
 
 ## 6. Security notes
 
