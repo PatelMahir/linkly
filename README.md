@@ -17,6 +17,7 @@ is small enough to read in an afternoon but structured the way a real service wo
 | **Backend**  | FastAPI · Python 3.12 · Pydantic v2 · SQLAlchemy 2.0 (async) | Fast, typed, auto-documented (OpenAPI) API layer. |
 | **Database** | PostgreSQL 16                                | Reliable relational store for links + click events. |
 | **Cache**    | Redis 7                                       | Hot redirect lookups and rate limiting. |
+| **Messaging**| RabbitMQ 3.13                                 | Async click-analytics ingestion (redirect → queue → worker). |
 | **Migrations** | Alembic                                     | Versioned, reversible schema changes. |
 | **Tests**    | Pytest (backend) · Vitest (frontend)          | Unit + API tests gated in CI. |
 | **CI**       | GitHub Actions                                | Lint → type-check → test → build on every push/PR. |
@@ -36,21 +37,27 @@ is small enough to read in an afternoon but structured the way a real service wo
                  ┌────────────────────────┐
                  │  FastAPI (backend)     │  /api/links, /api/analytics, /{code}
                  │  localhost:8000        │
-                 └─────┬───────────┬──────┘
-                       │           │
-          reads/writes │           │ hot lookups + rate limit
-                       ▼           ▼
-             ┌──────────────┐  ┌──────────┐
-             │ PostgreSQL   │  │  Redis   │
-             │  links,      │  │  cache   │
-             │  click_events│  └──────────┘
-             └──────────────┘
+                 └──┬───────┬─────────┬───┘
+      reads/writes  │       │ hot     │ publish
+                    │       │ lookups │ click
+                    ▼       ▼         ▼
+          ┌──────────────┐ ┌───────┐ ┌────────────┐
+          │ PostgreSQL   │ │ Redis │ │  RabbitMQ  │
+          │  links,      │ │ cache │ │  clicks    │
+          │  click_events│ └───────┘ └─────┬──────┘
+          └──────▲───────┘                 │ consume
+                 │      writes click_events │
+                 │        ┌─────────────────▼──────┐
+                 └────────┤  Worker (app.worker)   │
+                          └────────────────────────┘
 ```
 
 Request flow for a redirect (`GET /{code}`):
-1. FastAPI checks **Redis** for `code → long_url` (cache hit = fast path).
-2. On miss, it reads **Postgres**, then populates Redis with a TTL.
-3. It records a **click_event** (async, non-blocking) and issues a `307` redirect.
+1. FastAPI checks **Redis** for `code → {id, url}` (cache hit = no DB touch).
+2. On miss, it reads **Postgres** once, then populates Redis with a TTL.
+3. It **publishes a click** to **RabbitMQ** and returns a `307` immediately.
+4. The **worker** consumes clicks and writes `click_events` to Postgres — so
+   redirect latency is decoupled from analytics write throughput.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full write-up and data model.
 

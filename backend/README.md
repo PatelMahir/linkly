@@ -10,6 +10,9 @@ app/
 ├── config.py          # typed settings from env (pydantic-settings)
 ├── database.py        # async engine, session factory, get_db dependency
 ├── cache.py           # Redis read-through cache for redirects
+├── rate_limit.py      # Redis fixed-window rate limiter (dependency)
+├── queue.py           # RabbitMQ publisher (click events)
+├── worker.py          # RabbitMQ consumer → writes click_events (own process)
 ├── models.py          # ORM tables: Link, ClickEvent  ← the schema
 ├── schemas.py         # Pydantic request/response contracts
 ├── routers/           # TRANSPORT: HTTP in/out only, no business logic
@@ -58,6 +61,10 @@ Every response carries `X-Request-ID` and `X-Process-Time-Ms` headers for tracin
   from Redis first (`app/cache.py`); only misses touch the DB.
 - **Rate limiting** is a Redis fixed-window counter per client IP
   (`app/rate_limit.py`), tunable via `RATE_LIMIT_*` env vars.
+- **Click analytics are async.** The redirect publishes a click to RabbitMQ
+  (`app/queue.py`); the **worker** (`app/worker.py`, run separately with
+  `python -m app.worker`) consumes and writes `click_events`. Scale ingestion by
+  running more worker replicas — the broker load-balances across them.
 
 ## Migrations (Alembic)
 

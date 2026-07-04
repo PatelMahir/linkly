@@ -2,8 +2,8 @@
 
 Scaling notes:
   * On a cache hit the destination is served without touching Postgres.
-  * The click is recorded in a BackgroundTask, so the redirect response is
-    returned immediately and is never blocked by an INSERT.
+  * The click is published to RabbitMQ (via a BackgroundTask) and persisted by a
+    separate worker, so the redirect is never blocked by a DB write.
   * The endpoint is rate-limited per client IP.
 
 This router has no /api prefix because short links live at the root path.
@@ -38,9 +38,9 @@ async def redirect(
     if link is None:
         raise HTTPException(404, "Short link not found")
 
-    # Queue analytics off the hot path; the redirect returns without waiting.
+    # Publish analytics off the hot path; the redirect returns without waiting.
     background_tasks.add_task(
-        analytics.record_click_bg,
+        analytics.enqueue_click,
         link_id=link.id,
         referrer=request.headers.get("referer"),
         country=request.headers.get("cf-ipcountry"),  # e.g. behind Cloudflare
